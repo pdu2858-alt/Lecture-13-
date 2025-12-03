@@ -3,7 +3,11 @@ import sqlite3
 import requests
 import pandas as pd
 import json
+import urllib3  # 新增引用
 from pathlib import Path
+
+# -- 忽略 SSL 警告訊息 --
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # -- Path setup --
 # Get the absolute path to the directory where this script is located
@@ -20,16 +24,21 @@ def getData():
         "format": "JSON"
     }
     
-    # 2. 抓取資料
-    response = requests.get(url, params=params)
+    # 2. 抓取資料 (加入 verify=False 跳過 SSL 驗證)
+    try:
+        response = requests.get(url, params=params, verify=False)
+        response.raise_for_status() # 檢查請求是否成功
+    except Exception as e:
+        st.error(f"連線失敗: {e}")
+        return []
+
     all_weather_data = []
 
     if response.status_code == 200:
         data = response.json()
-       
         
         # 3. 解析複雜的 JSON 結構
-        # 路徑：cwaopendata -> dataset -> resources -> resource -> data -> agrWeatherForecasts -> weatherForecasts -> location
+        # 路徑：cwaopendata -> resources -> resource -> data -> agrWeatherForecasts -> weatherForecasts -> location
         try:
             locations = data['cwaopendata']['resources']['resource']['data']['agrWeatherForecasts']['weatherForecasts']['location']
             
@@ -37,7 +46,6 @@ def getData():
                 loc_name = loc['locationName']
                 
                 # 取得該地區的最高溫與最低溫列表
-                # weatherElements 下的結構包含 MaxT (最高溫) 和 MinT (最低溫)
                 max_t_list = loc['weatherElements']['MaxT']['daily']
                 min_t_list = loc['weatherElements']['MinT']['daily']
                 
@@ -63,11 +71,15 @@ def getData():
     return all_weather_data
 
 def create_table(data):
+    # 如果沒有資料就不執行
+    if not data:
+        return
+
     # 建立 SQLite 資料庫連線
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # 為了避免重複執行導致資料堆疊，我們先刪除舊表 (正式環境可視需求調整)
+    # 為了避免重複執行導致資料堆疊，我們先刪除舊表
     c.execute("DROP TABLE IF EXISTS weather")
     
     # 建立新表：包含 id, 地區, 日期, 最高溫, 最低溫
@@ -91,8 +103,11 @@ def app():
 
     # 從資料庫撈取資料
     conn = sqlite3.connect(DB_PATH)
-    # 使用 Pandas 直接讀取 SQL 比較方便處理
-    df = pd.read_sql("SELECT * FROM weather", conn)
+    try:
+        # 使用 Pandas 直接讀取 SQL 比較方便處理
+        df = pd.read_sql("SELECT * FROM weather", conn)
+    except Exception:
+        df = pd.DataFrame()
     conn.close()
 
     if not df.empty:
